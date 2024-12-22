@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keycat Video Generator</title>
+    <script src="/public/assets/ffmpeg/package/dist/umd/ffmpeg.js"></script>
+    <script src="/public/assets/util/package/dist/umd/index.js"></script>
+</head>
+<body>
+    <h1>Keycat Video Generator</h1>
+    <form id="videoForm">
+        <label for="youtube">YouTube Video URL:</label>
+        <input type="text" id="youtube" required>
+        <br>
+        <label for="bpm">BPM (original is 188):</label>
+        <input type="number" id="bpm" value="188" step="0.1" min="1" required>
+        <br>
+        <label for="start">Audio Seek Time (seconds):</label>
+        <input type="number" id="start" value="0" step="0.1" min="0" required>
+        <br>
+        <button type="submit" id="submitButton">Create Video</button>
+    </form>
+    
+    <div id="statusMessage" style="display: none; margin-top: 20px;">
+        Generating video...
+    </div>
+
+    <video id="outputVideo" controls style="max-width: 100%; margin-top: 20px; display: none;">
+        Your browser does not support the video element.
+    </video>
+
+    <button id="downloadButton" style="display: none; margin-top: 10px;">
+        Download Video
+    </button>
+    <button id="shareButton" style="display: none; margin-top: 10px; margin-left: 10px;">
+        Share Link
+    </button>
+
+    <script>
+        // Function to get URL parameters
+        function getUrlParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                youtube: params.get('v'),
+                bpm: params.get('bpm'),
+                start: params.get('t')
+            };
+        }
+
+        // Function to set form values from URL parameters
+        function setFormFromParams() {
+            const params = getUrlParams();
+            if (params.youtube) {
+                document.getElementById('youtube').value = `https://youtube.com/watch?v=${params.youtube}`;
+            }
+            if (params.bpm) {
+                document.getElementById('bpm').value = params.bpm;
+            }
+            if (params.start) {
+                document.getElementById('start').value = params.start;
+            }
+            
+            // Auto-submit if all parameters are present
+            if (params.youtube && params.bpm && params.start) {
+                document.getElementById('videoForm').dispatchEvent(new Event('submit'));
+            }
+        }
+
+        // Function to create shareable URL
+        function createShareableUrl() {
+            const youtube = document.getElementById('youtube').value;
+            const bpm = document.getElementById('bpm').value;
+            const start = document.getElementById('start').value;
+            
+            // Extract video ID from YouTube URL
+            const videoId = youtube.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/)?.[1];
+            
+            const url = new URL(window.location.href);
+            url.searchParams.set('v', videoId);
+            url.searchParams.set('bpm', bpm);
+            url.searchParams.set('t', start);
+            return url.toString();
+        }
+
+        document.getElementById('videoForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // Show status message and hide elements at start
+            const statusMessage = document.getElementById('statusMessage');
+            const downloadButton = document.getElementById('downloadButton');
+            const shareButton = document.getElementById('shareButton');
+            const submitButton = document.getElementById('submitButton');
+            const videoElement = document.getElementById('outputVideo');
+            
+            statusMessage.style.display = 'block';
+            downloadButton.style.display = 'none';
+            shareButton.style.display = 'none';
+            submitButton.disabled = true;
+            videoElement.style.display = 'none';  // Hide video while generating
+
+            const youtube = document.getElementById('youtube').value;
+            const targetBpm = parseFloat(document.getElementById('bpm').value);
+            const originalBpm = 188; // Original BPM of the video
+            const speed = targetBpm / originalBpm;
+            const start = document.getElementById('start').value;
+
+            // Fetch audio from YouTube
+            const audioResponse = await fetch(`http://localhost:5000/download?url=${encodeURIComponent(youtube)}`, {
+                method: 'GET',
+                mode: 'cors'
+            });
+            const audioBlob = await audioResponse.blob();
+
+            // Fetch video
+            const videoResponse = await fetch('http://localhost:8001/video.mp4');
+            const videoBlob = await videoResponse.blob();
+
+            // Load ffmpeg.wasm
+            // const { createFFmpeg, fetchFile } = FFmpeg;
+            const { fetchFile } = FFmpegUtil;
+            const { FFmpeg } = FFmpegWASM;
+            const ffmpeg = new FFmpeg();
+            await ffmpeg.load({
+              coreURL: "/public/assets/core/package/dist/umd/ffmpeg-core.js",
+            });
+
+            ffmpeg.writeFile('input.mp4', await fetchFile(videoBlob));
+            ffmpeg.writeFile('audio.webm', await fetchFile(audioBlob));
+
+            // Prepare files for ffmpeg
+
+            // Run ffmpeg command to replace audio
+            await ffmpeg.exec([
+                '-i', 'input.mp4',
+                '-ss', start,              // Using renamed variable
+                '-i', 'audio.webm',
+                '-filter_complex',
+                `[0:v]setpts=${1/speed}*PTS[v]`,  // adjust video speed
+                '-map', '[v]',                     // take processed video
+                '-map', '1:a',                     // take audio from second input
+                '-c:v', 'h264',                    // use h264 codec
+                '-c:a', 'aac',                     // encode audio to aac
+                '-preset', 'ultrafast',            // fastest encoding preset
+                '-movflags', '+faststart',
+                '-shortest',                       // end when shortest input ends
+                'output.mp4'
+            ]);
+
+            // Get the output file
+            const data = await ffmpeg.readFile('output.mp4');
+            const blob = new Blob([data], { type: 'video/mp4' });
+            const url = URL.createObjectURL(blob);
+
+            // Show video and buttons after processing
+            statusMessage.style.display = 'none';
+            videoElement.style.display = 'block';
+            videoElement.src = url;
+            videoElement.play();
+            downloadButton.style.display = 'block';
+            shareButton.style.display = 'block';
+            submitButton.disabled = false;
+
+            // Show download button and set up click handler
+            downloadButton.onclick = () => {
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'output.mp4';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+
+            // Clean up the URL when the video is no longer needed
+            videoElement.onended = () => {
+                URL.revokeObjectURL(url);
+            };
+        });
+
+        // Add share button click handler
+        document.getElementById('shareButton').addEventListener('click', async () => {
+            const shareUrl = createShareableUrl();
+            try {
+                await navigator.clipboard.writeText(shareUrl);
+                alert('Link copied to clipboard!');
+            } catch (err) {
+                console.error('Failed to copy:', err);
+                alert('Failed to copy link');
+            }
+        });
+
+        // Call setFormFromParams when page loads
+        setFormFromParams();
+    </script>
+</body>
+</html>
