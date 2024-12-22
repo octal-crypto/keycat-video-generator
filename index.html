@@ -106,14 +106,14 @@
             const start = document.getElementById('start').value;
 
             // Fetch audio from YouTube
-            const audioResponse = await fetch(`http://localhost:5000/download?url=${encodeURIComponent(youtube)}`, {
+            const audioResponse = await fetch(`http://172.232.168.233/download?url=${encodeURIComponent(youtube)}`, {
                 method: 'GET',
                 mode: 'cors'
             });
             const audioBlob = await audioResponse.blob();
 
             // Fetch video
-            const videoResponse = await fetch('http://localhost:8001/video.mp4');
+            const videoResponse = await fetch('/video.mp4');
             const videoBlob = await videoResponse.blob();
 
             // Load ffmpeg.wasm
